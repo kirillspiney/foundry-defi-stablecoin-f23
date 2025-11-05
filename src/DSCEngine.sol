@@ -38,6 +38,7 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine__TransferFailed();
     error DSCEngine__BreaksHealthFactor(uint256 healhFactor);
     error DSCEngine__MintFailed();
+    error DSCEngine__HealthFactorOk();
 
     //////////////////////
     // State Variables ///
@@ -46,7 +47,8 @@ contract DSCEngine is ReentrancyGuard {
     uint256 private constant PRECISION = 1e18;
     uint256 private constant LIQUIDATION_THRESHOLD = 50; // 200% overcollateralized
     uint256 private constant LIQUIDATION_PRECISION = 100;
-    uint256 private constant MIN_HEALTH_FACTOR = 1;
+    uint256 private constant MIN_HEALTH_FACTOR = 1e18;
+    uint256 private constant LIQUIADATION_BONUS = 10; // 10%
 
     mapping(address token => address priceFeed) private s_priceFeeds; // tokenToPriceFeed
     mapping(address user => mapping(address token => uint256 amount))
@@ -190,12 +192,12 @@ contract DSCEngine is ReentrancyGuard {
             tokenCollateralAddress,
             amountCollateral
         );
-        bool success = IERC20(tokenCollateralAddress).tranfer(
+        bool success = IERC20(tokenCollateralAddress).transfer(
             msg.sender,
             amountCollateral
         );
         if (!success) {
-            revert DSCEngine__TranferFailed();
+            revert DSCEngine__TransferFailed();
         }
         _revertIfHealthFactorIsBroken(msg.sender);
     }
@@ -227,7 +229,41 @@ contract DSCEngine is ReentrancyGuard {
         _revertIfHealthFactorIsBroken(msg.sender); // I don't think this would ever hit...
     }
 
-    function liquidate() external {}
+    /*
+     * @param collateral The erc20 collateral address to liquidate from the user
+     * @param user The user who has broken the health factor. Their _healthFactor should be below MIN_HEALTH_FACTOR
+     * @param debtToCover The amount of DSC you want to burn to improve the users health factor
+     * @notice You can partially liquidate a user.
+     * @notice You will get a liquidation bonus for taking the users funds.
+     * @notice This function working assumes the protocol will be roughly 200% overcollateralized in order for this to work.
+     * @notice A known bug would be if the protocol were 100% or less collateralized, then we wouldn't be able to incentive the liquidators.
+     * For example, if the price of the collateral plummeted before anyone could be liquidated.
+     *
+     * Follows CEI: Checks, Effects, Interactions
+     */
+
+    function liquidate(
+        address collateral,
+        address user,
+        uint256 debtToCover
+    ) external moreThanZero(debtToCover) nonReentrant {
+        // need to check health factor of the user
+        uint256 startingUserHealthFactor = _healthFactor(user);
+        if (startingUserHealthFactor >= MIN_HEALTH_FACTOR) {
+            revert DSCEngine__HealthFactorOk();
+        }
+        // We want to burn their DSC "debt"
+        // And take their collateral
+        uint256 tokenAmountFromDebtCovered = getTokenAmountFromUsd(
+            collateral,
+            debtToCover
+        );
+        // And give them a 10% bonus
+        uint256 bonusCollateral = (tokenAmountFromDebtCovered *
+            LIQUIADATION_BONUS) / LIQUIDATION_PRECISION;
+        uint256 totalCollateralToRedeem = tokenAmountFromDebtCovered +
+            bonusCollateral;
+    }
 
     function getHealthFactor() external view {}
 
@@ -275,6 +311,19 @@ contract DSCEngine is ReentrancyGuard {
     ///////////////////////////////////////////
     // Public & External View Functions    ////
     ///////////////////////////////////////////
+
+    function getTokenAmountFromUsd(
+        address token,
+        uint256 usdAmountInWei
+    ) public view returns (uint256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(
+            s_priceFeeds[token]
+        );
+        (, int256 price, , , ) = priceFeed.latestRoundData();
+        return
+            (usdAmountInWei * PRECISION) /
+            (uint256(price) * ADDITIONAL_FEED_PRECISION);
+    }
 
     function getAccountCollateralValue(
         address user
