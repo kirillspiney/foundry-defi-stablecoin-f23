@@ -4,7 +4,7 @@ pragma solidity ^0.8.18;
 
 import {Script} from "forge-std/Script.sol";
 import {MockV3Aggregator} from "../test/mocks/MockV3Aggregator.sol";
-import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
+import {ERC20Mock} from "../test/mocks/ERC20Mock.sol";
 
 contract HelperConfig is Script {
     struct NetworkConfig {
@@ -23,7 +23,13 @@ contract HelperConfig is Script {
 
     NetworkConfig public activeNetworkConfig;
 
-    constructor() {}
+    constructor() {
+        if (block.chainid == 11155111) {
+            activeNetworkConfig = getSepoliaEthConfig();
+        } else {
+            activeNetworkConfig = getOrCreateAnvilEthConfig();
+        }
+    }
 
     function getSepoliaEthConfig() public view returns (NetworkConfig memory) {
         return
@@ -54,5 +60,14 @@ contract HelperConfig is Script {
         );
         ERC20Mock wbtcMock = new ERC20Mock("WBTC", "WBTC", msg.sender, 1000e8);
         vm.stopBroadcast();
+
+        return
+            NetworkConfig({
+                wethUsdPriceFeed: address(ethUsdPriceFeed),
+                wbtcUsdPriceFeed: address(btcUsdPriceFeed),
+                weth: address(wethMock),
+                wbtc: address(wbtcMock),
+                deployerKey: DEFAULT_ANVIL_PRIVATE_KEY
+            });
     }
 }
